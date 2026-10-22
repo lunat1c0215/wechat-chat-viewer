@@ -16,7 +16,7 @@ if (-not (Test-Path $appDir)) {
 }
 
 $stage = "$root\build\release-stage"
-$zip = "$root\release\微信聊天记录查看器-v$version-win64.zip"
+$zip = "$root\release\wechat-chat-viewer-v$version-win64.zip"
 
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Path $stage -Force | Out-Null

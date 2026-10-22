@@ -29,7 +29,7 @@
 ### 方式一：使用发布包（推荐）
 
 1. 在 [Releases](https://github.com/lunat1c0215/wechat-chat-viewer/releases) 下载
-   `微信聊天记录查看器-v1.0.0-win64.zip`
+   `wechat-chat-viewer-v1.0.0-win64.zip`
 2. 解压到任意目录（**不要**放系统目录）
 3. 先运行并登录电脑版微信
 4. 双击 `启动查看器.bat`
@@ -88,7 +88,7 @@ python src\微信聊天记录查看器.py
 
 ```powershell
 .\scripts\build.ps1          # 产物在 dist\微信聊天记录查看器\
-.\scripts\release.ps1        # 产物在 release\微信聊天记录查看器-v1.0.0-win64.zip
+.\scripts\release.ps1        # 产物在 release\wechat-chat-viewer-v1.0.0-win64.zip
 ```
 
 详见 [docs/BUILD.md](docs/BUILD.md)。

@@ -30,7 +30,7 @@ pip install pyinstaller
 .\scripts\release.ps1
 ```
 
-输出：`release\微信聊天记录查看器-v<版本>-win64.zip`，内含：
+输出：`release\wechat-chat-viewer-v<版本>-win64.zip`，内含：
 
 ```
 微信聊天记录查看器.exe
@@ -48,7 +48,7 @@ VERSION
 4. 打标签：`git tag -a v1.0.0 -m "v1.0.0"`
 5. 推送：`git push && git push --tags`
 6. 打包：`.\scripts\release.ps1`
-7. 发布：`gh release create v1.0.0 "release\...zip" --title "v1.0.0" --notes-file CHANGELOG.md`
+7. 发布：`gh release create v1.0.0 "release\wechat-chat-viewer-v1.0.0-win64.zip" --title "v1.0.0" --notes-file CHANGELOG.md`
 
 ## 注意事项
 
@@ -56,5 +56,6 @@ VERSION
   cmd 解析失败、程序不启动。`.gitattributes` 已将该文件标记为 `-text`。
 - `dist/`、`build/`、`release/` 均不入库；可执行文件通过 GitHub Release 分发
   （单文件超过 100 MB 不能进入 git 历史）。
+- **发布资产名必须用 ASCII**：`gh release upload` 会把中文文件名截断成 `-v1.0.0-win64.zip`。
 - 若新增第三方依赖，需要同步更新 `requirements.txt` 与 `scripts/build.ps1`
   中的 `--hidden-import`。
