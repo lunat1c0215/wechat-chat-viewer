@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     打包发布压缩包：release\微信聊天记录查看器-v<版本>-win64.zip
 .EXAMPLE

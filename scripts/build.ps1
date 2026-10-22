@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     构建微信聊天记录查看器（PyInstaller onedir）。
 .EXAMPLE
