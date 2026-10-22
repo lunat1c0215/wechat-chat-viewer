@@ -134,6 +134,85 @@ def _scan_emoticon_seeds(pid: int) -> set[int]:
     return seeds
 
 
+_SEED_CACHE: dict[int, set[int]] = {}
+_SEED_PROCS: list = []
+
+
+def run_seed_scan_cli(pid: int, out_file: str) -> int:
+    """子进程入口：扫描内存 seed 并写成 JSON。
+
+    正则扫内存会长时间占住 GIL，放在主进程里会把 Tk 事件循环饿死
+    （界面卡死、插入会话列表慢几十倍）。因此扫描永远丢给独立进程。
+    """
+    try:
+        seeds = _scan_emoticon_seeds(pid)
+        Path(out_file).write_text(json.dumps(sorted(seeds)), encoding="utf-8")
+        return 0
+    except Exception:
+        return 1
+
+
+def _scan_emoticon_seeds_isolated(pid: int, timeout: float = 240) -> set[int] | None:
+    """在独立进程里扫描；失败返回 None，由调用方决定是否降级。"""
+    out = Path(tempfile.gettempdir()) / f"wx_seeds_{os.getpid()}_{pid}.json"
+    try:
+        out.unlink(missing_ok=True)
+    except Exception:
+        pass
+    args = [sys.executable]
+    if not getattr(sys, "frozen", False):
+        args.append(str(Path(sys.argv[0]).resolve()))
+    args += ["--seedscan", str(pid), str(out)]
+    try:
+        proc = subprocess.Popen(args, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                creationflags=0x08000000)
+        _SEED_PROCS.append(proc)
+        proc.wait(timeout=timeout)
+        if out.exists():
+            return {int(v) for v in json.loads(out.read_text(encoding="utf-8"))}
+    except Exception:
+        return None
+    finally:
+        for p in list(_SEED_PROCS):
+            if p.poll() is not None:
+                try:
+                    _SEED_PROCS.remove(p)
+                except ValueError:
+                    pass
+        try:
+            out.unlink(missing_ok=True)
+        except Exception:
+            pass
+    return None
+
+
+def kill_seed_scans():
+    """主程序退出时收掉扫描子进程，避免留下吃 CPU 的孤儿进程。"""
+    for p in list(_SEED_PROCS):
+        try:
+            if p.poll() is None:
+                p.terminate()
+        except Exception:
+            pass
+    _SEED_PROCS.clear()
+
+
+def scan_emoticon_seeds_cached(pid: int, log=print) -> set[int]:
+    """seed 扫描进程内缓存：表情/图片密钥共用一次扫描结果。"""
+    cached = _SEED_CACHE.get(pid)
+    if cached is not None:
+        return set(cached)
+    seeds = _scan_emoticon_seeds_isolated(pid)
+    if seeds is None:
+        log("独立进程扫描未成功，改在本进程内扫描…")
+        seeds = _scan_emoticon_seeds(pid)
+    _SEED_CACHE[pid] = set(seeds)
+    if len(_SEED_CACHE) > 4:
+        _SEED_CACHE.pop(next(iter(_SEED_CACHE)), None)
+    return seeds
+
+
 def find_emoticon_key(account_dir, log=print, seeds=None):
     """从运行中的微信内存提取表情密钥并验证。
 
@@ -557,6 +636,34 @@ CONFIG_XOR_MASK = bytes.fromhex(
 _KEY_LITERAL_RE = re.compile(rb"[xX]'([0-9a-fA-F]{64,192})'")
 
 
+class DecryptCancelled(Exception):
+    """用户在解密过程中点了取消。"""
+
+
+# 进程内密钥缓存：只存在内存里，进程退出即消失，不写任何文件。
+# 同一微信实例（PID 不变）重复检测/重试时直接复用，跳过内存扫描。
+_KEY_CACHE: dict[str, list[str]] = {}
+_KEY_CACHE_PID: int | None = None
+
+
+def extract_keys_cached(account_dir=None, log=print) -> list[str]:
+    """带进程内缓存的密钥提取（换微信号 / 微信重启后自动失效）。"""
+    global _KEY_CACHE_PID
+    pid = _weixin_main_pid()
+    if pid != _KEY_CACHE_PID:
+        _KEY_CACHE.clear()
+        _KEY_CACHE_PID = pid
+    key = str(account_dir or "")
+    cached = _KEY_CACHE.get(key)
+    if cached:
+        log(f"复用本进程已提取的 {len(cached)} 个密钥（内存缓存，不落盘）")
+        return list(cached)
+    keys = extract_keys(log)
+    if keys:
+        _KEY_CACHE[key] = list(keys)
+    return keys
+
+
 class _MemBasicInfo(ctypes.Structure):
     _fields_ = [
         ("BaseAddress", ctypes.c_void_p),
@@ -774,7 +881,8 @@ def decrypt_db(db_path: Path, rawkey: bytes, out_path: Path | None = None) -> Pa
 
 
 def decrypt_account(account_dir: Path, target: Path, keys: list[bytes],
-                    log=print) -> dict:
+                    log=print, progress_cb=None,
+                    cancel_event=None) -> dict:
     """把单个账号 db_storage 下的数据库解密到 target（保持相对路径）。"""
     db_storage = account_dir / "db_storage"
     if not db_storage.is_dir():
@@ -783,7 +891,10 @@ def decrypt_account(account_dir: Path, target: Path, keys: list[bytes],
                 if not p.name.endswith(".decrypted.db")]
     log(f"发现 {len(db_files)} 个数据库文件")
     decrypted = failed = 0
-    for db in db_files:
+    total = max(1, len(db_files))
+    for i, db in enumerate(db_files):
+        if cancel_event is not None and cancel_event.is_set():
+            raise DecryptCancelled()
         rel = db.relative_to(db_storage)
         out = target / rel.with_name(rel.stem + ".decrypted.db")
         ok = False
@@ -796,12 +907,18 @@ def decrypt_account(account_dir: Path, target: Path, keys: list[bytes],
         else:
             failed += 1
             log(f"  解密失败: {rel}")
+        if progress_cb:
+            try:
+                progress_cb(i + 1, total, str(rel))
+            except Exception:
+                pass
     return {"decrypted": decrypted, "failed": failed}
 
 
 def run_headless_decrypt(account_dir: str, target: str,
                          log_file: str = "", done_file: str = "",
-                         log_cb=None) -> int:
+                         log_cb=None, progress_cb=None,
+                         cancel_event=None, result_out=None) -> int:
     """扫描密钥并解密指定账号到 target 临时目录（无缓存，每次全新解密）。
 
     - 进程内调用：传 log_cb 回调即可在 UI 中显示进度。
@@ -822,10 +939,12 @@ def run_headless_decrypt(account_dir: str, target: str,
             except Exception:
                 pass
     result = {"success": False, "decrypted": 0, "failed": 0, "keys": 0,
-              "message": "", "finished": time.time()}
+              "cancelled": False, "message": "", "finished": time.time()}
     try:
         log(f"开始解密：{account_dir}")
-        keys = extract_keys(log)
+        if progress_cb:
+            progress_cb(6, "正在扫描微信内存中的数据库密钥…")
+        keys = extract_keys_cached(account_dir, log)
         result["keys"] = len(keys)
         if not keys:
             result["message"] = "未提取到密钥，请确认微信正在运行且已登录。"
@@ -837,16 +956,39 @@ def run_headless_decrypt(account_dir: str, target: str,
         target_path = Path(target)
         target_path.mkdir(parents=True, exist_ok=True)
         key_bytes = [bytes.fromhex(k) for k in keys]
-        stats = decrypt_account(account_path, target_path, key_bytes, log=log)
+        if progress_cb:
+            progress_cb(16, f"已获取 {len(keys)} 个密钥，开始解密数据库…")
+
+        def db_progress(done, total, rel):
+            if progress_cb:
+                pct = 16 + 82.0 * done / max(1, total)
+                progress_cb(pct, f"正在解密数据库 {done}/{total}")
+
+        stats = decrypt_account(account_path, target_path, key_bytes, log=log,
+                                progress_cb=db_progress,
+                                cancel_event=cancel_event)
         result["decrypted"] = stats["decrypted"]
         result["failed"] = stats["failed"]
         result["success"] = True
         result["message"] = f"完成：成功 {result['decrypted']}，失败 {result['failed']}"
         log(result["message"])
+    except DecryptCancelled:
+        result["cancelled"] = True
+        result["success"] = False
+        result["message"] = "已取消"
+        try:
+            log("已取消解密")
+        except Exception:
+            pass
+        if result_out is not None:
+            result_out.update(result)
+        return 2
     except Exception as exc:
         result["message"] = f"解密出错：{exc}"
         try:
             log(result["message"])
+            import traceback
+            log(traceback.format_exc().strip().replace("\n", " | ")[:400])
         except Exception:
             pass
         if isinstance(exc, PermissionError):
@@ -857,6 +999,8 @@ def run_headless_decrypt(account_dir: str, target: str,
                 except Exception:
                     pass
             raise
+    if result_out is not None:
+        result_out.update(result)
     if done_file:
         try:
             with open(done_file, "w", encoding="utf-8") as f:

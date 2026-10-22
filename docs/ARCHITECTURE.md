@@ -15,17 +15,42 @@
 
 ```
 main() → ChatViewer.__init__()
-   ├─ 构建主题与两个页面（wizard / viewer）
+   ├─ 构建主题与两个页面（home / viewer）
    ├─ after(100ms) 事件轮询
-   └─ after(150ms) 自动检测
+   └─ after(60ms) 自动检测
         └─ 后台线程：find_weixin_process / list_accounts
-             └─ event_queue: wechat_detected
-                  └─ 确认弹窗 → 后台解密 → event_queue: decrypt_done
-                       └─ 读取会话 → 加载消息 → 进入查看器
+             └─ event_queue: wechat_detected → 首页卡片填充（进入 / 取消 / 重新检测）
+                  └─ 点「进入」→ run_headless_decrypt(progress_cb, cancel_event)
+                       └─ decrypt_done → enter_viewer
+                            └─ 加载线程：DBService.init → 会话 → 计数 → load_done
+                                 └─ 头像 / 图片 / 表情在后台继续准备，不阻塞界面
 ```
 
 主线程只做 UI，所有耗时操作（内存扫描、解密、图片处理、统计）都在后台线程，
 结果通过 `queue.Queue` 回到主线程处理，避免阻塞 Tk 事件循环。
+
+### 启动状态机
+
+`ChatViewer.state` 只有五个值，`_set_state()` 一次改完标题、提示、指示灯、
+进度条模式与按钮可用性：
+
+| 状态 | 含义 | 可用按钮 |
+|---|---|---|
+| `detect` | 轮询微信进程 / 账号目录 | 取消、重新检测 |
+| `ready` | 已识别账号，等用户确认 | 进入、取消、重新检测 |
+| `work` | 读密钥 / 解密中 | 取消 |
+| `error` | 失败并给出对应出口 | 重试、退出（有账号时可直接进入）|
+| `idle` | 用户主动取消 | 立即检测 |
+
+所有阶段共享同一个 `threading.Event`（`_cancel_event`）：
+解密在每处理完一个数据库前检查，加载在阶段边界检查，取消后清理临时目录回到 `ready`。
+
+### 取消与清理
+
+- 取消解密：`wxdecrypt.DecryptCancelled` 抛出 → 返回码 2 → 主线程删临时目录
+- 取消加载：保留已加载的会话，收起遮罩，不再等待图片/表情
+- 关闭窗口：`withdraw()` → 关闭 SQLite → 用 `--cleanup <dir>` 独立进程删除临时目录，
+  主进程立刻 `destroy()`，所以窗口瞬间消失、无蓝色控制台窗口
 
 ## 密钥提取（关键）
 
@@ -38,6 +63,14 @@ main() → ChatViewer.__init__()
    - 用固定掩码 `CONFIG_XOR_MASK` 异或，得到形如 `x'<32B key><16B salt>'` 的字面量
 2. **旧格式路径（微信 4.0.x）**
    - 直接扫描 `x'<64位hex>'`
+
+### 进程内密钥缓存（v1.1.0）
+
+`extract_keys_cached()` 以「微信主进程 PID + 账号目录」为键，把扫描结果
+只放在**进程内存**里（`_KEY_CACHE`）。取消后重新进入、失败重试都不再重扫内存；
+换微信号或微信重启（PID 变化）时缓存自动失效。不写任何文件，退出即丢。
+
+`scan_emoticon_seeds_cached()` 同理缓存表情/图片共用的 seed 扫描结果。
 
 两条路径都不依赖 DLL 版本偏移，差异只在密钥容器形态。
 
