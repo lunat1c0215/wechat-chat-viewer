@@ -1,0 +1,36 @@
+# ---- 构建产物 ----
+dist/
+build/
+*.spec
+!requirements.txt
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# ---- 运行时/本地数据 ----
+*.log
+*.tmp
+*.bak
+*.decrypted.db
+*.dec.db
+wx_viewer_*/
+
+# ---- 发布压缩包 ----
+release/
+*.zip
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store

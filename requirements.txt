@@ -1,0 +1,9 @@
+# 运行时依赖（Python 3.11）
+psutil>=5.9
+pycryptodome>=3.19
+pillow>=10.0
+imageio-ffmpeg>=0.4.9
+zstandard>=0.22
+
+# 打包工具
+# pyinstaller>=6.0

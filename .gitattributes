@@ -1,0 +1,14 @@
+# 默认按文本处理，检出时统一 LF
+* text=auto eol=lf
+
+# 批处理脚本为 GBK 编码且必须是 CRLF，禁止任何换行/编码转换
+*.bat -text
+*.cmd -text
+
+# 二进制
+*.exe binary
+*.dll binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary
